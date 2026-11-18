@@ -2,8 +2,12 @@
 <html lang="es">
 <head>
   <meta charset="UTF-8">
-  <title>JARVIS Local AI</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0f172a">
+  <title>JARVIS</title>
   <style>
+    * { box-sizing: border-box; }
+    html, body { height: 100%; }
     body {
       background: #0f172a;
       color: #38bdf8;
@@ -12,8 +16,8 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      height: 100vh;
       margin: 0;
+      padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px);
     }
     .arc-reactor {
       width: 120px;
@@ -23,10 +27,18 @@
       box-shadow: 0 0 25px #38bdf8, inset 0 0 15px #38bdf8;
       animation: pulse 2s infinite;
       cursor: pointer;
+      flex-shrink: 0;
+    }
+    .arc-reactor.escuchando {
+      border-color: #f8fafc;
+      box-shadow: 0 0 40px #f8fafc, inset 0 0 25px #38bdf8;
     }
     @keyframes pulse {
       0%, 100% { transform: scale(1); opacity: 0.8; }
       50% { transform: scale(1.08); opacity: 1; box-shadow: 0 0 35px #38bdf8, inset 0 0 25px #38bdf8; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .arc-reactor { animation: none; }
     }
     #status {
       font-size: 1.2rem;
@@ -46,6 +58,7 @@
     }
     input[type="text"] {
       flex: 1;
+      min-width: 0;
       padding: 12px 15px;
       border-radius: 8px;
       border: 1px solid #38bdf8;
@@ -54,9 +67,7 @@
       font-size: 1rem;
       outline: none;
     }
-    input[type="text"]:focus {
-      box-shadow: 0 0 10px #38bdf8;
-    }
+    input[type="text"]:focus { box-shadow: 0 0 10px #38bdf8; }
     button {
       padding: 12px 20px;
       border-radius: 8px;
@@ -68,39 +79,68 @@
       cursor: pointer;
       transition: background 0.2s;
     }
-    button:hover {
-      background: #0284c7;
-      color: #fff;
-    }
+    button:hover { background: #0284c7; color: #fff; }
+    button:disabled { opacity: 0.5; cursor: wait; }
   </style>
 </head>
 <body>
 
-  <div class="arc-reactor" onclick="iniciarReconocimiento()" title="Haz clic para hablar"></div>
-  <h2 id="status">Pregúntame lo que quieras o pide revisar tu correo...</h2>
+  <div class="arc-reactor" id="reactor" onclick="iniciarReconocimiento()" title="Toca para hablar"></div>
+  <h2 id="status">Pregúntame lo que quieras o pide revisar tu agenda...</h2>
 
   <div class="input-container">
     <input type="text" id="userInput" placeholder="Escribe aquí tu consulta..." onkeypress="detectarEnter(event)">
-    <button onclick="enviarTexto()">Enviar</button>
+    <button id="btnEnviar" onclick="enviarTexto()">Enviar</button>
   </div>
 
   <script>
+    // ====== CONFIGURACIÓN ======
+    const API_URL = "https://jarvis-backend-p9yf.onrender.com";
+
     const status = document.getElementById('status');
     const userInput = document.getElementById('userInput');
+    const reactor = document.getElementById('reactor');
+    const btnEnviar = document.getElementById('btnEnviar');
+
+    // ====== CLAVE DE ACCESO ======
+    function obtenerClave() {
+      let clave = null;
+      try { clave = localStorage.getItem("jarvisKey"); } catch (e) {}
+      if (!clave) {
+        clave = prompt("Clave de JARVIS:");
+        if (clave) {
+          try { localStorage.setItem("jarvisKey", clave); } catch (e) {}
+        }
+      }
+      return clave || "";
+    }
+
+    function borrarClave() {
+      try { localStorage.removeItem("jarvisKey"); } catch (e) {}
+    }
+
+    // ====== DESPERTAR RENDER (cold start) ======
+    fetch(API_URL + "/ping").catch(() => {});
+
+    // ====== VOZ: RECONOCIMIENTO ======
     const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
     let recognition;
 
     if (SpeechRecognition) {
       recognition = new SpeechRecognition();
       recognition.lang = 'es-CL';
-      
+
       recognition.onresult = (event) => {
         const texto = event.results[0][0].transcript;
         userInput.value = texto;
         procesarComando(texto);
+        userInput.value = "";
       };
 
+      recognition.onend = () => reactor.classList.remove('escuchando');
+
       recognition.onerror = () => {
+        reactor.classList.remove('escuchando');
         status.textContent = "Error al escuchar. Prueba escribiendo abajo.";
       };
     }
@@ -108,9 +148,11 @@
     function iniciarReconocimiento() {
       if (recognition) {
         try {
+          window.speechSynthesis.cancel();
           recognition.start();
+          reactor.classList.add('escuchando');
           status.textContent = "Escuchando...";
-        } catch(e) {
+        } catch (e) {
           status.textContent = "Ya estoy escuchando...";
         }
       } else {
@@ -118,10 +160,9 @@
       }
     }
 
+    // ====== ENTRADA DE TEXTO ======
     function detectarEnter(event) {
-      if (event.key === 'Enter') {
-        enviarTexto();
-      }
+      if (event.key === 'Enter') enviarTexto();
     }
 
     function enviarTexto() {
@@ -132,33 +173,71 @@
       }
     }
 
-    function procesarComando(comando) {
+    // ====== COMUNICACIÓN CON EL BACKEND ======
+    async function procesarComando(comando) {
+      const clave = obtenerClave();
+      btnEnviar.disabled = true;
       status.textContent = "Pensando respuesta...";
-      
-      fetch('http://localhost:5000/procesar', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ comando: comando })
-      })
-      .then(response => response.json())
-      .then(data => {
-        status.textContent = data.respuesta;
-        hablar(data.respuesta);
-      })
-      .catch(error => {
+
+      // Si el servidor de Render estaba dormido, avisa tras unos segundos
+      const aviso = setTimeout(() => {
+        status.textContent = "Despertando el servidor, puede tardar hasta un minuto...";
+      }, 6000);
+
+      try {
+        const response = await fetch(API_URL + "/procesar", {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-Jarvis-Key': clave
+          },
+          body: JSON.stringify({ comando: comando })
+        });
+
+        if (response.status === 401) {
+          borrarClave();
+          throw new Error("clave");
+        }
+
+        const data = await response.json();
+        const respuesta = data.respuesta || "No recibí respuesta del servidor.";
+        status.textContent = respuesta;
+        hablar(respuesta);
+      } catch (error) {
         console.error("Error:", error);
-        const errResp = "Error al conectar con el servidor backend.";
+        const errResp = error.message === "clave"
+          ? "Clave incorrecta. Recarga la página e inténtalo de nuevo."
+          : "Error al conectar con el servidor. Intenta de nuevo en unos segundos.";
         status.textContent = errResp;
         hablar(errResp);
-      });
+      } finally {
+        clearTimeout(aviso);
+        btnEnviar.disabled = false;
+      }
     }
+
+    // ====== VOZ: SÍNTESIS (tono grave y serio) ======
+    let vozElegida = null;
+
+    function elegirVoz() {
+      const voces = window.speechSynthesis.getVoices().filter(v => v.lang.toLowerCase().startsWith('es'));
+      vozElegida =
+        voces.find(v => /google|microsoft/i.test(v.name) && v.lang.toLowerCase() === 'es-cl') ||
+        voces.find(v => /google|microsoft/i.test(v.name)) ||
+        voces.find(v => v.lang.toLowerCase() === 'es-cl') ||
+        voces[0] || null;
+    }
+
+    elegirVoz();
+    window.speechSynthesis.onvoiceschanged = elegirVoz;
 
     function hablar(mensaje) {
       window.speechSynthesis.cancel();
       const utterance = new SpeechSynthesisUtterance(mensaje);
       utterance.lang = 'es-CL';
+      utterance.pitch = 0.75;
+      utterance.rate = 0.95;
+      if (vozElegida) utterance.voice = vozElegida;
       window.speechSynthesis.speak(utterance);
     }
   </script>
